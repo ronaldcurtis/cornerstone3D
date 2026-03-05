@@ -4,6 +4,7 @@ import {
   cleanupTestEnvironment,
   createViewports,
 } from '../../../utils/test/testUtils';
+import { OffHeapMemoryPool } from '../src/cache/OffHeapMemoryPool';
 
 const { cache } = cornerstone;
 
@@ -24,6 +25,40 @@ describe('Cache', () => {
       toolGroupIds,
     })
   );
+
+  describe('Off-heap memory pool', () => {
+    it('should allow setting and getting the off-heap pool', () => {
+      expect(cache.getOffHeapPool()).toBeNull();
+
+      const pool = new OffHeapMemoryPool(65536, 2);
+      cache.setOffHeapPool(pool);
+      expect(cache.getOffHeapPool()).toBe(pool);
+
+      cache.setOffHeapPool(null);
+      expect(cache.getOffHeapPool()).toBeNull();
+    });
+
+    it('should expose pool max capacity via getMaxCapacity', () => {
+      const pool = new OffHeapMemoryPool(65536, 4);
+      expect(pool.getMaxCapacity()).toBe(65536 * 4);
+      pool.destroy();
+    });
+
+    it('should allow cache max size to be raised to match pool capacity', () => {
+      const originalMax = cache.getMaxCacheSize();
+
+      const pool = new OffHeapMemoryPool(65536, 4);
+      cache.setOffHeapPool(pool);
+      cache.setMaxCacheSize(pool.getMaxCapacity());
+
+      expect(cache.getMaxCacheSize()).toBe(65536 * 4);
+
+      // Restore
+      cache.setMaxCacheSize(originalMax);
+      cache.setOffHeapPool(null);
+      pool.destroy();
+    });
+  });
 
   describe('Set maximum cache size', () => {
     it('Maximum cache size should be at least 1 GB', () => {
@@ -135,6 +170,27 @@ describe('Cache', () => {
       expect(cache.getImageLoadObject(image.imageId)).toBeUndefined();
     });
 
+    it('should free off-heap memory when removing an image from cache', async () => {
+      const pool = new OffHeapMemoryPool(65536, 2);
+      cache.setOffHeapPool(pool);
+
+      cache.putImageLoadObject(image.imageId, imageLoadObject);
+      await imageLoadObject.promise;
+
+      // Simulate an off-heap allocation for the imageId
+      const data = new Uint8Array(100);
+      pool.allocateAndCopy(data, image.imageId);
+      expect(pool.getAllocationCount()).toBe(1);
+
+      cache.removeImageLoadObject(image.imageId);
+
+      // Off-heap allocation should be freed
+      expect(pool.getAllocationCount()).toBe(0);
+      expect(cache.getImageLoadObject(image.imageId)).toBeUndefined();
+
+      cache.setOffHeapPool(null);
+    });
+
     it('should fail if imageId is not defined (removeImageLoadObject)', () => {
       expect(function () {
         cache.removeImageLoadObject(undefined);
@@ -222,6 +278,27 @@ describe('Cache', () => {
       cache.purgeCache();
 
       expect(cache.getCacheSize()).toBe(0);
+    });
+
+    it('should be able to purge the entire cache and destroy off-heap pool', async () => {
+      const pool = new OffHeapMemoryPool(65536, 2);
+      cache.setOffHeapPool(pool);
+
+      cache.putImageLoadObject(image.imageId, imageLoadObject);
+      await imageLoadObject.promise;
+
+      // Manually simulate an off-heap allocation for the imageId
+      const data = new Uint8Array(100);
+      pool.allocateAndCopy(data, image.imageId);
+      expect(pool.getAllocationCount()).toBe(1);
+
+      cache.purgeCache();
+
+      expect(cache.getCacheSize()).toBe(0);
+      // Pool should be destroyed (all allocations cleared)
+      expect(pool.getAllocationCount()).toBe(0);
+
+      cache.setOffHeapPool(null);
     });
 
     it('should cache images when there is enough volatile + unallocated space', async () => {

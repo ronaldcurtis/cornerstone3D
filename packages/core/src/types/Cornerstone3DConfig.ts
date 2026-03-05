@@ -68,6 +68,33 @@ interface Cornerstone3DConfig {
   };
 
   /**
+   * Off-heap memory configuration. When enabled, pixel data is stored in
+   * WebAssembly.Memory (outside the JS heap), bypassing the 4 GiB Chromium JS heap limit.
+   *
+   * See {@link OffHeapMemoryPool} for implementation details, or the full
+   * analysis at `packages/core/docs/off-heap-memory-analysis.md`.
+   *
+   * @example
+   * ```typescript
+   * init({
+   *   cache: {
+   *     useOffHeapMemory: true,
+   *     offHeapBlockSize: 4 * 1024 * 1024 * 1024, // 4 GiB (default)
+   *     offHeapMaxBlocks: 4,                       // 16 GiB default (configurable)
+   *   },
+   * });
+   * ```
+   */
+  cache?: {
+    /** Enable off-heap memory via WebAssembly.Memory to exceed the 4 GiB Chromium JS heap limit. Default: false. */
+    useOffHeapMemory?: boolean;
+    /** Size of each WASM memory block in bytes. Default: 4 GiB (4294967296). */
+    offHeapBlockSize?: number;
+    /** Maximum number of WASM memory blocks to create. Default: 4 (16 GiB). Increase for larger datasets — limited by system RAM, not the browser. */
+    offHeapMaxBlocks?: number;
+  };
+
+  /**
    * This function returns an imported module for the given module id.
    * It allows replacing broken packing system imports with external importers
    * that perform lazy imports.

@@ -168,4 +168,45 @@ describe('VoxelManager', () => {
     VoxelManager.addInstanceToImage(image);
     expect(image.voxelManager).toBeInstanceOf(VoxelManager);
   });
+
+  describe('setScalarData', () => {
+    it('should replace the backing scalar data', () => {
+      const original = new Uint16Array([1, 2, 3, 4]);
+      const vm = VoxelManager.createImageVoxelManager({
+        width: 2,
+        height: 2,
+        scalarData: original,
+      });
+
+      expect(vm.getScalarData()).toBe(original);
+      expect(vm.getAtIndex(0)).toBe(1);
+
+      const replacement = new Uint16Array([10, 20, 30, 40]);
+      vm.setScalarData(replacement);
+
+      expect(vm.getScalarData()).toBe(replacement);
+      expect(vm.getAtIndex(0)).toBe(10);
+      expect(vm.getAtIndex(3)).toBe(40);
+    });
+
+    it('should allow reads and writes after replacing scalar data', () => {
+      const original = new Uint8Array([0, 0, 0, 0]);
+      const vm = VoxelManager.createImageVoxelManager({
+        width: 2,
+        height: 2,
+        scalarData: original,
+      });
+
+      const replacement = new Uint8Array([5, 6, 7, 8]);
+      vm.setScalarData(replacement);
+
+      // Write through voxelManager should update the new backing data
+      vm.setAtIndex(0, 99);
+      expect(vm.getAtIndex(0)).toBe(99);
+      expect(replacement[0]).toBe(99);
+
+      // Original should be untouched
+      expect(original[0]).toBe(0);
+    });
+  });
 });

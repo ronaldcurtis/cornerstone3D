@@ -129,10 +129,20 @@ function handleImageLoadPromise(
 }
 
 function ensureVoxelManager(image: IImage): void {
+  const pool = cache.getOffHeapPool();
+
   if (!image.voxelManager) {
+    // No voxelManager yet — create one
     const { width, height, numberOfComponents } = image;
+    let scalarData = image.getPixelData();
+
+    // Copy pixel data to WASM memory if off-heap is enabled
+    if (pool) {
+      scalarData = pool.allocateAndCopy(scalarData, image.imageId);
+    }
+
     const voxelManager = VoxelManager.createImageVoxelManager({
-      scalarData: image.getPixelData(),
+      scalarData,
       width,
       height,
       numberOfComponents,
@@ -141,7 +151,20 @@ function ensureVoxelManager(image: IImage): void {
     image.voxelManager = voxelManager;
     image.getPixelData = () =>
       voxelManager.getScalarData() as PixelDataTypedArray;
-    delete image.imageFrame.pixelData;
+    delete image.imageFrame?.pixelData;
+  } else if (pool) {
+    // VoxelManager already exists (e.g., from DICOM loader) —
+    // migrate its scalar data to off-heap WASM memory
+    const scalarData =
+      image.voxelManager.getScalarData() as PixelDataTypedArray;
+    const offHeapData = pool.allocateAndCopy(scalarData, image.imageId);
+
+    if (offHeapData !== scalarData) {
+      image.voxelManager.setScalarData(offHeapData);
+      image.getPixelData = () =>
+        image.voxelManager.getScalarData() as PixelDataTypedArray;
+      delete image.imageFrame?.pixelData;
+    }
   }
 }
 

@@ -5,6 +5,8 @@ import type { Cornerstone3DConfig } from './types';
 import CentralizedWebWorkerManager from './webWorkerManager/webWorkerManager';
 import { getSupportedTextureFormats } from './utilities/textureSupport';
 import { RenderingEngineModeEnum } from './enums';
+import OffHeapMemoryPool from './cache/OffHeapMemoryPool';
+import cache from './cache/cache';
 
 // TODO: change config into a class with methods to better control get/set
 const defaultConfig: Cornerstone3DConfig = {
@@ -148,6 +150,16 @@ function init(configuration = config): boolean {
     config.rendering.useCPURendering = true;
   } else {
     console.log('CornerstoneRender: using GPU rendering');
+  }
+
+  // Initialize off-heap memory pool if configured and supported
+  if (config.cache?.useOffHeapMemory && OffHeapMemoryPool.isSupported()) {
+    const pool = new OffHeapMemoryPool(
+      config.cache.offHeapBlockSize,
+      config.cache.offHeapMaxBlocks
+    );
+    cache.setOffHeapPool(pool);
+    cache.setMaxCacheSize(pool.getMaxCapacity());
   }
 
   csRenderInitialized = true;
