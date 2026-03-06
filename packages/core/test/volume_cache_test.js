@@ -3,6 +3,7 @@ import {
   setupTestEnvironment,
 } from '../../../utils/test/testUtils';
 import * as cornerstone from '../src/index';
+import { OffHeapMemoryPool } from '../src/cache/OffHeapMemoryPool';
 
 const { cache, imageLoader, volumeLoader } = cornerstone;
 
@@ -46,6 +47,32 @@ describe('Volume Cache', () => {
 
     expect(cache.getVolume('volume1')).toBeDefined();
     expect(cache.getCacheSize()).toBe(620000); // 2 images (20000) + volume (600000)
+  });
+
+  it('should free off-heap memory when decaching images to make room for a volume', async () => {
+    cache.setMaxCacheSize(620000);
+    const pool = new OffHeapMemoryPool(65536, 4);
+    cache.setOffHeapPool(pool);
+
+    const image1 = await createMockImage('image1', 100, 100);
+    const image2 = await createMockImage('image2', 100, 100);
+
+    // Simulate off-heap allocations for both images
+    pool.allocateAndCopy(new Uint8Array(10000), 'image1');
+    pool.allocateAndCopy(new Uint8Array(10000), 'image2');
+    expect(pool.getAllocationCount()).toBe(2);
+
+    // Creating this volume requires evicting image1
+    const volume = await createMockVolume('volume1', 100, 100, 61);
+
+    expect(cache.getVolume('volume1')).toBeDefined();
+    expect(cache.getImage('image1')).toBeUndefined();
+    expect(cache.getImage('image2')).toBeDefined();
+
+    // image1's off-heap allocation should have been freed
+    expect(pool.getAllocationCount()).toBe(1);
+
+    cache.setOffHeapPool(null);
   });
 
   it('should cache a volume by decaching images if necessary', async () => {

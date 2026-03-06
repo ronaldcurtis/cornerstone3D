@@ -4,6 +4,7 @@ import {
   setupTestEnvironment,
 } from '../../../utils/test/testUtils';
 import * as cornerstone from '../src/index';
+import { OffHeapMemoryPool } from '../src/cache/OffHeapMemoryPool';
 
 const { cache, Enums } = cornerstone;
 
@@ -75,6 +76,44 @@ describe('New Image Cache', () => {
       expect(cache.getImage(imageId1)).toBeUndefined();
       expect(cache.getImage(imageId2)).toBeDefined();
       expect(cache.getImage(imageId3)).toBeDefined();
+    });
+
+    it('should free off-heap memory when evicting oldest image', async () => {
+      const pool = new OffHeapMemoryPool(65536, 2);
+      cache.setOffHeapPool(pool);
+
+      const imageId1 = 'image1';
+      const imageId2 = 'image2';
+      const imageId3 = 'image3';
+
+      await cache.putImageLoadObject(
+        imageId1,
+        createMockImageLoadObject(imageId1, 3)
+      );
+      // Simulate off-heap allocation for image1
+      pool.allocateAndCopy(new Uint8Array(3), imageId1);
+
+      await cache.putImageLoadObject(
+        imageId2,
+        createMockImageLoadObject(imageId2, 3)
+      );
+      pool.allocateAndCopy(new Uint8Array(3), imageId2);
+
+      expect(pool.getAllocationCount()).toBe(2);
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // This should evict image1 to make room
+      await cache.putImageLoadObject(
+        imageId3,
+        createMockImageLoadObject(imageId3, 3)
+      );
+
+      // image1 was evicted, its off-heap memory should be freed
+      expect(pool.getAllocationCount()).toBe(1);
+      expect(cache.getImage(imageId1)).toBeUndefined();
+
+      cache.setOffHeapPool(null);
     });
 
     it('should not cache an image larger than the max cache size', async () => {

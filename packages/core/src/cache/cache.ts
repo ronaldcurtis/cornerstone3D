@@ -18,6 +18,7 @@ import eventTarget from '../eventTarget';
 import Events from '../enums/Events';
 import { ImageQualityStatus } from '../enums';
 import fnv1aHash from '../utilities/fnv1aHash';
+import type OffHeapMemoryPool from './OffHeapMemoryPool';
 
 const ONE_GB = 1073741824;
 
@@ -27,8 +28,36 @@ const ONE_GB = 1073741824;
  * size, and the instance size, which controls how big any single object can
  * be.  Defaults are 3 GB and 2 GB - 8 bytes (just enough to allow allocating it
  * without crashing).
- * The 3 gb is tuned to the chromium garbage collection cycle to allow image volumes
- * to be used/discarded.
+ * The 3 GB default is tuned to the Chromium garbage collection cycle to allow
+ * image volumes to be used/discarded within the 4 GiB Chromium JS heap limit.
+ *
+ * To surpass this limit, you can opt in to off-heap memory storage via
+ * WebAssembly.Memory. When enabled, pixel data is stored outside the JS heap,
+ * allowing the cache to far exceed 4 GiB. The default configuration provides
+ * 16 GiB (4 blocks x 4 GiB), but `offHeapMaxBlocks` can be increased — the
+ * practical limit is available system memory, not the browser. Volumes
+ * benefit automatically since they delegate to per-image voxel managers.
+ *
+ * When off-heap memory is enabled, `init()` automatically raises `_maxCacheSize`
+ * to match the pool's total capacity so that `CACHE_SIZE_EXCEEDED` is not thrown
+ * prematurely. Users can override by calling `setMaxCacheSize()` after `init()`.
+ *
+ * See {@link OffHeapMemoryPool} for allocator details, or the full analysis at:
+ * `packages/core/docs/off-heap-memory-analysis.md`
+ *
+ * @example
+ * ```typescript
+ * import { init } from '@cornerstonejs/core';
+ *
+ * init({
+ *   cache: {
+ *     useOffHeapMemory: true,
+ *     // optional — defaults shown:
+ *     offHeapBlockSize: 4 * 1024 * 1024 * 1024, // 4 GiB per WASM block
+ *     offHeapMaxBlocks: 4,                       // 16 GiB default (configurable)
+ *   },
+ * });
+ * ```
  */
 class Cache {
   // used to store image data (2d)
@@ -45,6 +74,7 @@ class Cache {
   private _imageCacheSize = 0;
   private _maxCacheSize = 3 * ONE_GB;
   private _geometryCacheSize = 0;
+  private _offHeapPool: OffHeapMemoryPool | null = null;
 
   /**
    * Generates a deterministic volume ID from a list of image IDs
@@ -81,6 +111,10 @@ class Cache {
    *
    * Maximum cache size should be set before adding the data.  If set after,
    * and it is smaller than the current size, will cause issues.
+   *
+   * When off-heap memory is enabled via `init({ cache: { useOffHeapMemory: true } })`,
+   * this limit is automatically raised to the pool's total capacity (blockSize * maxBlocks)
+   * during `init()`. You can override it afterward by calling this method again.
    *
    * @param newMaxCacheSize -  new maximum cache size
    *
@@ -146,6 +180,20 @@ class Cache {
   }
 
   /**
+   * Sets the off-heap memory pool for WASM-backed storage.
+   */
+  public setOffHeapPool(pool: OffHeapMemoryPool | null): void {
+    this._offHeapPool = pool;
+  }
+
+  /**
+   * Returns the off-heap memory pool, or null if not configured.
+   */
+  public getOffHeapPool(): OffHeapMemoryPool | null {
+    return this._offHeapPool;
+  }
+
+  /**
    * Deletes the imageId from the image cache
    *
    * @param imageId - imageId
@@ -181,6 +229,11 @@ class Cache {
 
     if (imageLoadObject?.decache) {
       imageLoadObject.decache();
+    }
+
+    // Free off-heap WASM memory if allocated
+    if (this._offHeapPool) {
+      this._offHeapPool.free(imageId);
     }
 
     this._imageCache.delete(imageId);
@@ -257,6 +310,11 @@ class Cache {
       this.removeImageLoadObject(imageId, { force: true });
 
       triggerEvent(eventTarget, Events.IMAGE_CACHE_IMAGE_REMOVED, { imageId });
+    }
+
+    // Release all off-heap WASM memory blocks
+    if (this._offHeapPool) {
+      this._offHeapPool.destroy();
     }
   };
 

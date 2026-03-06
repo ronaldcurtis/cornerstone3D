@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Off-Heap Memory via WebAssembly.Memory - Demo</title>
+  <style>
+    body { font-family: monospace; background: #1a1a1a; color: #0f0; padding: 20px; }
+    #log { white-space: pre-wrap; line-height: 1.6; }
+    .error { color: #f44; }
+    .success { color: #4f4; }
+    .info { color: #4af; }
+    .controls { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+    label { color: #ccc; font-size: 14px; }
+    input[type="number"] {
+      font-family: monospace; font-size: 16px; padding: 8px 12px; width: 80px;
+      background: #2a2a2a; color: #fff; border: 1px solid #555; border-radius: 4px;
+    }
+    button {
+      font-family: monospace; font-size: 16px; padding: 8px 20px; cursor: pointer;
+      background: #333; color: #0f0; border: 1px solid #0f0; border-radius: 4px;
+    }
+    button:hover { background: #444; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.reset { color: #f44; border-color: #f44; }
+    button.reset:hover { background: #442222; }
+  </style>
+</head>
+<body>
+  <h2>Off-Heap Memory via WebAssembly.Memory - Demo</h2>
+  <p style="color:#ccc">
+    Each <code>WebAssembly.Memory</code> instance can hold up to 4 GiB (32-bit addressing).<br>
+    There is no browser-imposed aggregate limit — the practical cap is your system RAM.<br>
+    See: <a href="https://v8.dev/blog/4gb-wasm-memory" style="color:#4af">V8 Blog</a>,
+    <a href="https://blog.stackblitz.com/posts/debugging-v8-webassembly/" style="color:#4af">StackBlitz (V8 pool removal)</a>
+  </p>
+
+  <div class="controls">
+    <label for="instanceCount">Memory instances (4 GiB each):</label>
+    <input type="number" id="instanceCount" value="4" min="1" max="100">
+    <button id="runBtn" onclick="runTest()">Run Test</button>
+    <button id="resetBtn" class="reset" onclick="resetTest()" disabled>Reset</button>
+  </div>
+
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const runBtn = document.getElementById('runBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const instanceInput = document.getElementById('instanceCount');
+
+    let wasmMemories = [];
+    let jsArrays = [];
+    let running = false;
+
+    function log(msg, cls = '') {
+      const span = document.createElement('span');
+      span.className = cls;
+      span.textContent = msg + '\n';
+      logEl.appendChild(span);
+      console.log(msg);
+    }
+
+    function formatBytes(bytes) {
+      return (bytes / (1024 ** 3)).toFixed(2) + ' GiB';
+    }
+
+    function setRunning(isRunning) {
+      running = isRunning;
+      runBtn.disabled = isRunning;
+      instanceInput.disabled = isRunning;
+      resetBtn.disabled = isRunning && wasmMemories.length === 0;
+    }
+
+    function resetTest() {
+      // Release all WASM memory references
+      wasmMemories.length = 0;
+      window._wasmMemories = null;
+
+      // Release JS heap test arrays
+      jsArrays.length = 0;
+      window._jsArrays = null;
+
+      logEl.innerHTML = '';
+      log('All memory instances released. References cleared for GC.', 'info');
+      log('');
+      resetBtn.disabled = true;
+    }
+
+    async function runTest() {
+      // Reset previous state first
+      wasmMemories.length = 0;
+      jsArrays.length = 0;
+      window._wasmMemories = null;
+      window._jsArrays = null;
+      logEl.innerHTML = '';
+
+      const count = Math.max(1, Math.floor(Number(instanceInput.value) || 4));
+      instanceInput.value = count;
+
+      setRunning(true);
+
+      const GiB = 1024 * 1024 * 1024;
+      const PAGE_SIZE = 65536; // 64 KiB per WebAssembly page
+      const TARGET_BYTES = 4 * GiB;
+      const TARGET_PAGES = TARGET_BYTES / PAGE_SIZE; // 65536 pages = 4 GiB
+
+      log(`Target per instance: ${formatBytes(TARGET_BYTES)} (${TARGET_PAGES} pages)`, 'info');
+      log(`Instances requested: ${count}`, 'info');
+      log(`Total target: ${formatBytes(TARGET_BYTES * count)}`, 'info');
+      log('');
+
+      for (let i = 0; i < count; i++) {
+        log(`--- Instance #${i + 1} of ${count} ---`);
+
+        try {
+          const t0 = performance.now();
+
+          const memory = new WebAssembly.Memory({
+            initial: TARGET_PAGES,
+            maximum: TARGET_PAGES,
+          });
+
+          const allocTime = performance.now() - t0;
+          log(`WebAssembly.Memory created in ${allocTime.toFixed(0)} ms`, 'success');
+          log(`  buffer size: ${formatBytes(memory.buffer.byteLength)}`);
+
+          // Fill the entire buffer to force physical memory commitment
+          const t1 = performance.now();
+          const view = new Uint8Array(memory.buffer);
+          const CHUNK = 256 * 1024 * 1024;
+          const totalChunks = Math.ceil(view.length / CHUNK);
+
+          for (let c = 0; c < totalChunks; c++) {
+            const offset = c * CHUNK;
+            const end = Math.min(offset + CHUNK, view.length);
+            view.fill(0xAA + i, offset, end);
+            if (c % 4 === 0) {
+              log(`  filling: ${formatBytes(end)} / ${formatBytes(view.length)}...`);
+              await new Promise(r => setTimeout(r, 0));
+            }
+          }
+
+          // Verify
+          const midpoint = Math.floor(view.length / 2);
+          const ok = view[0] === (0xAA + i) && view[midpoint] === (0xAA + i);
+          const verifyTime = performance.now() - t1;
+          log(`  fill+verify: ${ok ? 'PASS' : 'FAIL'} (${verifyTime.toFixed(0)} ms)`, ok ? 'success' : 'error');
+
+          wasmMemories.push(memory);
+          log(`  cumulative WASM memory: ${formatBytes(TARGET_BYTES * (i + 1))}`, 'info');
+          log('');
+        } catch (e) {
+          log(`FAILED: ${e.message}`, 'error');
+          log(`  Allocated ${formatBytes(TARGET_BYTES * i)} before failure`, 'error');
+          log('');
+          break;
+        }
+      }
+
+      // JS heap test
+      log('--- JS Heap Test After WASM Allocations ---');
+      try {
+        const chunkSize = 256 * 1024 * 1024;
+        for (let j = 0; j < 4; j++) {
+          const arr = new Uint8Array(chunkSize);
+          arr[0] = j;
+          jsArrays.push(arr);
+          log(`  JS allocation #${j + 1}: ${formatBytes(chunkSize)} OK`, 'success');
+        }
+        log(`  Total JS heap allocated: ${formatBytes(chunkSize * 4)}`, 'success');
+      } catch (e) {
+        log(`  JS heap allocation failed: ${e.message}`, 'error');
+      }
+
+      log('');
+      log(`=== Summary: ${wasmMemories.length} x 4 GiB = ${formatBytes(TARGET_BYTES * wasmMemories.length)} in WASM Memory ===`,
+        wasmMemories.length === count ? 'success' : 'error');
+
+      // Keep references alive so memory isn't GC'd
+      window._wasmMemories = wasmMemories;
+      window._jsArrays = jsArrays;
+
+      setRunning(false);
+      resetBtn.disabled = false;
+    }
+  </script>
+</body>
+</html>
